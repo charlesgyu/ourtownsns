@@ -32,7 +32,7 @@ export default function PhoneMockup({
           <div className="pointer-events-none absolute inset-0 z-20 bg-gradient-to-tr from-transparent via-white/5 to-white/15 opacity-50" />
 
           {/* Actual Screen Content - exact aspect ratio to prevent clipping */}
-          <div className="w-[230px] sm:w-[250px] md:w-[265px] aspect-[471/1024] overflow-hidden bg-white relative">
+          <div className="w-[215px] sm:w-[230px] md:w-[240px] aspect-[471/1024] overflow-hidden bg-white relative">
             <img 
               src={imageSrc} 
               alt={alt} 
