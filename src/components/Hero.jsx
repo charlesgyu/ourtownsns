@@ -6,10 +6,10 @@ export default function Hero() {
       id="intro" 
       className="w-full max-w-[1200px] mx-auto px-5 sm:px-9 md:px-12 pt-16 md:pt-24 pb-16 md:pb-24 flex flex-col items-center text-center hero-gradient"
     >
-      {/* Badge: 동네 기반 SNS */}
+      {/* Badge: 동네 기반 SNS · 우리동네 */}
       <div className="inline-flex items-center justify-center bg-white border border-[#cde9d8] rounded-full px-4 py-2 mb-7 shadow-xs">
         <span className="text-[14px] font-bold text-[#3e7acf] leading-none">
-          동네 기반 SNS
+          동네 기반 SNS · 우리동네
         </span>
       </div>
 
