@@ -10,6 +10,17 @@ import { supabase } from '../lib/supabase';
 
 const fmt = (iso) => (iso ? new Date(iso).toLocaleString('ko-KR', { dateStyle: 'short', timeStyle: 'short' }) : '-');
 
+// 사용자가 넣은 주소(사진 주소, 홍보 링크)는 http(s)만 열어 준다 — 'javascript:' 같은 주소로
+// 관리자 화면에서 스크립트가 실행되는 것(관리자 로그인 세션 탈취)을 막는다.
+const safeUrl = (u) => {
+  try {
+    const url = new URL(u);
+    return url.protocol === 'https:' || url.protocol === 'http:' ? url.href : null;
+  } catch {
+    return null;
+  }
+};
+
 const STATUS_LABEL = {
   visible: '공개',
   hidden: '임시 숨김',
@@ -74,9 +85,9 @@ function Images({ urls }) {
   if (!urls?.length) return null;
   return (
     <div className="flex gap-2 flex-wrap mt-3">
-      {urls.map((u) => (
-        <a key={u} href={u} target="_blank" rel="noreferrer">
-          <img src={u} alt="" className="w-28 h-28 object-cover rounded-lg border border-gray-200" />
+      {urls.map(safeUrl).filter(Boolean).map((u) => (
+        <a key={u} href={u} target="_blank" rel="noreferrer noopener">
+          <img src={u} alt="" referrerPolicy="no-referrer" className="w-28 h-28 object-cover rounded-lg border border-gray-200" />
         </a>
       ))}
     </div>
@@ -602,7 +613,9 @@ function Promotions({ notify }) {
         <Card key={p.post_id} className="space-y-2">
           <p className="text-xs text-gray-600"><b className="text-[#18322c] text-sm">{p.author_nickname}</b> · 하루 {p.daily_budget_krw?.toLocaleString()}원 · {p.reach} · {p.min_age ?? '-'}~{p.max_age ?? '-'}세 · {p.gender ?? '전체'}</p>
           <p className="text-sm text-gray-800 whitespace-pre-wrap">{p.content}</p>
-          {p.link_url && <a className="text-xs text-[#3e7acf] underline" href={p.link_url} target="_blank" rel="noreferrer">{p.link_url}</a>}
+          {p.link_url && (safeUrl(p.link_url)
+            ? <a className="text-xs text-[#3e7acf] underline" href={safeUrl(p.link_url)} target="_blank" rel="noreferrer noopener">{p.link_url}</a>
+            : <span className="text-xs text-red-600">허용되지 않는 링크: {p.link_url}</span>)}
           <div className="flex gap-2"><Btn onClick={() => approve(p)}>승인</Btn><Btn tone="ghost" onClick={() => reject(p)}>거절</Btn></div>
         </Card>
       ))}
