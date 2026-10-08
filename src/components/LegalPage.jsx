@@ -1,9 +1,10 @@
 import React, { useEffect } from 'react';
-import { termsData, privacyData } from '../data/legalText';
+import { termsData, privacyData, childSafetyData } from '../data/legalText';
 
 export default function LegalPage({ currentType, onClose, onSwitchType }) {
   const isPrivacy = currentType === 'privacy';
-  const data = isPrivacy ? privacyData : termsData;
+  const isChildSafety = currentType === 'child-safety';
+  const data = isPrivacy ? privacyData : isChildSafety ? childSafetyData : termsData;
 
   useEffect(() => {
     window.scrollTo({ top: 0, behavior: 'instant' });
@@ -39,12 +40,22 @@ export default function LegalPage({ currentType, onClose, onSwitchType }) {
             <button
               onClick={() => onSwitchType('terms')}
               className={`px-3 py-1.5 text-xs sm:text-sm font-bold rounded-lg transition-all ${
-                !isPrivacy 
+                currentType === 'terms' 
                   ? 'bg-white text-[#3e7acf] shadow-xs' 
                   : 'text-[#60736c] hover:text-[#18322c]'
               }`}
             >
               이용약관
+            </button>
+            <button
+              onClick={() => onSwitchType('child-safety')}
+              className={`px-3 py-1.5 text-xs sm:text-sm font-bold rounded-lg transition-all ${
+                isChildSafety 
+                  ? 'bg-white text-[#3e7acf] shadow-xs' 
+                  : 'text-[#60736c] hover:text-[#18322c]'
+              }`}
+            >
+              아동 안전
             </button>
           </div>
         </div>

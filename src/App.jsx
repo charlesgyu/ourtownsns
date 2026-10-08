@@ -10,7 +10,7 @@ import AdminDashboard from './components/AdminDashboard';
 import ConfirmDeletePage from './components/ConfirmDeletePage';
 
 export default function App() {
-  const [currentView, setCurrentView] = useState(null); // null | 'privacy' | 'terms' | 'admin' | 'confirm-delete'
+  const [currentView, setCurrentView] = useState(null); // null | 'privacy' | 'terms' | 'child-safety' | 'admin' | 'confirm-delete'
   const [deleteToken, setDeleteToken] = useState('');
 
   // Handle URL hash changes
@@ -24,6 +24,8 @@ export default function App() {
         setCurrentView('privacy');
       } else if (hash === 'terms' || path === '/terms') {
         setCurrentView('terms');
+      } else if (hash === 'child-safety' || path === '/child-safety') {
+        setCurrentView('child-safety');
       } else if (hash === 'admin' || path === '/admin') {
         setCurrentView('admin');
       } else if (hash === 'confirm-delete' || path === '/confirm-delete') {
@@ -64,7 +66,7 @@ export default function App() {
     return <ConfirmDeletePage token={deleteToken} onBackToHome={closeView} />;
   }
 
-  if (currentView === 'privacy' || currentView === 'terms') {
+  if (currentView === 'privacy' || currentView === 'terms' || currentView === 'child-safety') {
     return (
       <LegalPage 
         currentType={currentView} 

@@ -28,6 +28,12 @@ export default function Footer({ onOpenLegal }) {
           >
             이용약관
           </button>
+          <button
+            onClick={() => onOpenLegal('child-safety')}
+            className="text-[14px] font-medium text-[#D8E8DF] hover:text-[#3ecf8e] transition-colors"
+          >
+            아동 안전 표준
+          </button>
         </div>
       </div>
     </footer>
