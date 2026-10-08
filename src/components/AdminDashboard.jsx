@@ -83,14 +83,34 @@ function Images({ urls }) {
   );
 }
 
-// ── 로그인 ───────────────────────────────────────────────
-function Login({ onDone, onBackToHome }) {
+// ── 로그인(비밀번호 → 이메일 인증번호) ─────────────────────
+// 서버의 is_admin()은 "인증번호를 통과한 그 로그인 세션"에서만 참이다. 그래서 비밀번호만으로는 어떤 관리자
+// 기능도 쓸 수 없다. needsCode: 이미 비밀번호로 로그인돼 있고 인증번호만 남은 상태(새로고침 등).
+function Login({ onDone, onBackToHome, needsCode }) {
+  const [stage, setStage] = useState(needsCode ? 'code' : 'password');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [code, setCode] = useState('');
+  const [sentTo, setSentTo] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
-  const submit = async (e) => {
+  const sendCode = useCallback(async () => {
+    setError('');
+    const { data, error: fnError } = await supabase.functions.invoke('admin-2fa', { body: {} });
+    if (fnError) {
+      let message = '인증번호를 보내지 못했어요. 잠시 후 다시 시도해 주세요.';
+      try { message = (await fnError.context.json()).message || message; } catch { /* 기본 문구 사용 */ }
+      setError(message);
+      return false;
+    }
+    setSentTo(data?.email ?? '');
+    return true;
+  }, []);
+
+  useEffect(() => { if (needsCode) sendCode(); }, [needsCode, sendCode]);
+
+  const submitPassword = async (e) => {
     e.preventDefault();
     setBusy(true);
     setError('');
@@ -100,37 +120,77 @@ function Login({ onDone, onBackToHome }) {
       setBusy(false);
       return;
     }
-    const isAdmin = await rpc('is_admin').catch(() => false);
-    if (!isAdmin) {
+    const hasRole = await rpc('has_admin_role').catch(() => false);
+    if (!hasRole) {
       await supabase.auth.signOut();
       setError('관리자 권한이 없는 계정이에요.');
       setBusy(false);
       return;
     }
+    if (await sendCode()) setStage('code');
     setBusy(false);
-    onDone();
   };
 
+  const submitCode = async (e) => {
+    e.preventDefault();
+    setBusy(true);
+    setError('');
+    try {
+      const ok = await rpc('admin_verify_2fa', { p_code: code });
+      if (ok) {
+        onDone();
+        return;
+      }
+      setError('인증번호가 맞지 않아요.');
+    } catch (err) {
+      setError(err.message.includes('code_expired') ? '인증번호가 만료됐어요. 다시 받아 주세요.'
+        : err.message.includes('too_many_attempts') ? '5회 틀려서 인증번호가 폐기됐어요. 다시 받아 주세요.'
+          : '확인하지 못했어요. 다시 시도해 주세요.');
+    }
+    setBusy(false);
+  };
+
+  const cancel = async () => {
+    await supabase.auth.signOut();
+    setStage('password');
+    setCode('');
+    setError('');
+  };
+
+  const input = 'w-full border border-gray-200 rounded-xl px-4 py-3 text-sm';
   return (
     <div className="min-h-screen bg-[#fafcfa] flex items-center justify-center px-5">
-      <form onSubmit={submit} className="w-full max-w-sm bg-white border border-[#dcece2] rounded-3xl p-8 space-y-4">
+      <form onSubmit={stage === 'password' ? submitPassword : submitCode} className="w-full max-w-sm bg-white border border-[#dcece2] rounded-3xl p-8 space-y-4">
         <div className="text-center mb-2">
           <Lock className="w-8 h-8 text-[#3e7acf] mx-auto mb-2" />
           <h1 className="text-xl font-black text-[#18322c]">우리동네 관리자 콘솔</h1>
-          <p className="text-xs text-gray-500 mt-1">관리자 권한이 있는 우리동네 계정으로 로그인하세요.</p>
+          <p className="text-xs text-gray-500 mt-1">
+            {stage === 'password' ? '관리자 권한이 있는 우리동네 계정으로 로그인하세요.'
+              : `${sentTo || '관리자 이메일'}로 보낸 6자리 인증번호를 입력하세요. (10분 유효)`}
+          </p>
         </div>
-        <input
-          type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="이메일" required
-          className="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm"
-        />
-        <input
-          type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="비밀번호" required
-          className="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm"
-        />
+        {stage === 'password' ? (
+          <>
+            <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="이메일" required className={input} />
+            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="비밀번호" required className={input} />
+          </>
+        ) : (
+          <input
+            inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={code}
+            onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))} placeholder="인증번호 6자리" required
+            className={`${input} text-center tracking-[0.5em] text-lg font-bold`}
+          />
+        )}
         {error && <p className="text-xs text-red-600 font-bold">{error}</p>}
         <button disabled={busy} className="w-full bg-[#3e7acf] text-white font-bold rounded-xl py-3 disabled:opacity-50">
-          {busy ? '확인 중…' : '로그인'}
+          {busy ? '확인 중…' : stage === 'password' ? '다음' : '확인'}
         </button>
+        {stage === 'code' && (
+          <div className="flex justify-between text-xs text-gray-500">
+            <button type="button" onClick={sendCode}>인증번호 다시 받기</button>
+            <button type="button" onClick={cancel}>다른 계정으로 로그인</button>
+          </div>
+        )}
         <button type="button" onClick={onBackToHome} className="w-full text-xs text-gray-500">홈으로</button>
       </form>
     </div>
@@ -553,7 +613,8 @@ function Promotions({ notify }) {
 // ── 콘솔 ────────────────────────────────────────────────
 export default function AdminDashboard({ onBackToHome }) {
   const [session, setSession] = useState(undefined); // undefined = 확인 중
-  const [isAdmin, setIsAdmin] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false); // 2단계 인증까지 마친 관리자 세션인지
+  const [hasRole, setHasRole] = useState(false); // 관리자 계정인지(인증번호 전)
   const [tab, setTab] = useState('posts');
   const [overview, setOverview] = useState(null);
   const [toast, setToast] = useState(null);
@@ -572,7 +633,11 @@ export default function AdminDashboard({ onBackToHome }) {
     const { data } = await supabase.auth.getSession();
     const s = data.session;
     if (s) {
-      const admin = await rpc('is_admin').catch(() => false);
+      const [role, admin] = await Promise.all([
+        rpc('has_admin_role').catch(() => false),
+        rpc('is_admin').catch(() => false),
+      ]);
+      setHasRole(role);
       setIsAdmin(admin);
       if (admin) refreshOverview();
     }
@@ -585,10 +650,13 @@ export default function AdminDashboard({ onBackToHome }) {
     await supabase.auth.signOut();
     setSession(null);
     setIsAdmin(false);
+    setHasRole(false);
   };
 
   if (session === undefined) return <div className="min-h-screen bg-[#fafcfa]" />;
-  if (!session || !isAdmin) return <Login onDone={checkSession} onBackToHome={onBackToHome} />;
+  if (!session || !isAdmin) {
+    return <Login onDone={checkSession} onBackToHome={onBackToHome} needsCode={Boolean(session && hasRole)} />;
+  }
 
   const Active = { posts: PostReports, dms: DmReports, severe: SevereFlags, sanctions: Sanctions, stats: Stats, promotions: Promotions }[tab];
 
