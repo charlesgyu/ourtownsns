@@ -94,32 +94,53 @@ function Images({ urls }) {
   );
 }
 
-// ── 로그인(비밀번호 → 이메일 인증번호) ─────────────────────
-// 서버의 is_admin()은 "인증번호를 통과한 그 로그인 세션"에서만 참이다. 그래서 비밀번호만으로는 어떤 관리자
-// 기능도 쓸 수 없다. needsCode: 이미 비밀번호로 로그인돼 있고 인증번호만 남은 상태(새로고침 등).
+// ── 로그인(비밀번호 → OTP 앱) ─────────────────────────────
+// 서버의 is_admin()은 "OTP까지 통과한 로그인 세션(aal2)"에서만 참이다. 비밀번호만으로는 어떤 관리자 기능도
+// 쓸 수 없다. 처음이면 QR 코드로 OTP 앱(Google Authenticator 등)에 등록하고, 이후에는 6자리만 입력한다.
+// needsCode: 이미 비밀번호로 로그인돼 있고 OTP만 남은 상태(새로고침 등).
 function Login({ onDone, onBackToHome, needsCode }) {
-  const [stage, setStage] = useState(needsCode ? 'code' : 'password');
+  const [stage, setStage] = useState(needsCode ? 'loading' : 'password'); // password | loading | enroll | code
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [code, setCode] = useState('');
-  const [sentTo, setSentTo] = useState('');
+  const [factorId, setFactorId] = useState(null);
+  const [enrollment, setEnrollment] = useState(null); // { qr, secret }
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
-  const sendCode = useCallback(async () => {
+  // 등록된 OTP가 있으면 6자리 입력, 없으면 새로 등록(QR). 등록하다 만 미인증 OTP는 지우고 다시 만든다.
+  const prepareOtp = useCallback(async () => {
     setError('');
-    const { data, error: fnError } = await supabase.functions.invoke('admin-2fa', { body: {} });
-    if (fnError) {
-      let message = '인증번호를 보내지 못했어요. 잠시 후 다시 시도해 주세요.';
-      try { message = (await fnError.context.json()).message || message; } catch { /* 기본 문구 사용 */ }
-      setError(message);
-      return false;
+    const { data, error: listError } = await supabase.auth.mfa.listFactors();
+    if (listError) {
+      setError('OTP 정보를 불러오지 못했어요. 다시 로그인해 주세요.');
+      setStage('password');
+      return;
     }
-    setSentTo(data?.email ?? '');
-    return true;
+    const verified = data.totp.find((f) => f.status === 'verified');
+    if (verified) {
+      setFactorId(verified.id);
+      setStage('code');
+      return;
+    }
+    for (const f of data.all.filter((f) => f.factor_type === 'totp' && f.status !== 'verified')) {
+      await supabase.auth.mfa.unenroll({ factorId: f.id });
+    }
+    const { data: enrolled, error: enrollError } = await supabase.auth.mfa.enroll({
+      factorType: 'totp',
+      friendlyName: `우리동네 관리자 ${new Date().toISOString().slice(0, 10)}`,
+    });
+    if (enrollError) {
+      setError('OTP 등록을 시작하지 못했어요. 잠시 후 다시 시도해 주세요.');
+      setStage('password');
+      return;
+    }
+    setFactorId(enrolled.id);
+    setEnrollment({ qr: enrolled.totp.qr_code, secret: enrolled.totp.secret });
+    setStage('enroll');
   }, []);
 
-  useEffect(() => { if (needsCode) sendCode(); }, [needsCode, sendCode]);
+  useEffect(() => { if (needsCode) prepareOtp(); }, [needsCode, prepareOtp]);
 
   const submitPassword = async (e) => {
     e.preventDefault();
@@ -138,7 +159,7 @@ function Login({ onDone, onBackToHome, needsCode }) {
       setBusy(false);
       return;
     }
-    if (await sendCode()) setStage('code');
+    await prepareOtp();
     setBusy(false);
   };
 
@@ -146,61 +167,69 @@ function Login({ onDone, onBackToHome, needsCode }) {
     e.preventDefault();
     setBusy(true);
     setError('');
-    try {
-      const ok = await rpc('admin_verify_2fa', { p_code: code });
-      if (ok) {
-        onDone();
-        return;
-      }
-      setError('인증번호가 맞지 않아요.');
-    } catch (err) {
-      setError(err.message.includes('code_expired') ? '인증번호가 만료됐어요. 다시 받아 주세요.'
-        : err.message.includes('too_many_attempts') ? '5회 틀려서 인증번호가 폐기됐어요. 다시 받아 주세요.'
-          : '확인하지 못했어요. 다시 시도해 주세요.');
+    const { error: verifyError } = await supabase.auth.mfa.challengeAndVerify({ factorId, code });
+    if (verifyError) {
+      setError('OTP 번호가 맞지 않아요. 앱에 표시된 최신 번호를 입력해 주세요.');
+      setCode('');
+      setBusy(false);
+      return;
     }
     setBusy(false);
+    onDone();
   };
 
   const cancel = async () => {
     await supabase.auth.signOut();
     setStage('password');
     setCode('');
+    setEnrollment(null);
     setError('');
   };
 
   const input = 'w-full border border-gray-200 rounded-xl px-4 py-3 text-sm';
+  const subtitle = {
+    password: '관리자 권한이 있는 우리동네 계정으로 로그인하세요.',
+    loading: 'OTP 정보를 확인하는 중…',
+    enroll: '처음 한 번만: OTP 앱(Google Authenticator 등)으로 아래 QR 코드를 찍은 뒤, 앱에 나온 6자리를 입력하세요.',
+    code: 'OTP 앱에 표시된 6자리 번호를 입력하세요.',
+  }[stage];
+
   return (
     <div className="min-h-screen bg-[#fafcfa] flex items-center justify-center px-5">
       <form onSubmit={stage === 'password' ? submitPassword : submitCode} className="w-full max-w-sm bg-white border border-[#dcece2] rounded-3xl p-8 space-y-4">
         <div className="text-center mb-2">
           <Lock className="w-8 h-8 text-[#3e7acf] mx-auto mb-2" />
           <h1 className="text-xl font-black text-[#18322c]">우리동네 관리자 콘솔</h1>
-          <p className="text-xs text-gray-500 mt-1">
-            {stage === 'password' ? '관리자 권한이 있는 우리동네 계정으로 로그인하세요.'
-              : `${sentTo || '관리자 이메일'}로 보낸 6자리 인증번호를 입력하세요. (10분 유효)`}
-          </p>
+          <p className="text-xs text-gray-500 mt-1 leading-relaxed">{subtitle}</p>
         </div>
-        {stage === 'password' ? (
+        {stage === 'password' && (
           <>
             <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="이메일" required className={input} />
             <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="비밀번호" required className={input} />
           </>
-        ) : (
+        )}
+        {stage === 'enroll' && enrollment && (
+          <div className="text-center space-y-2">
+            <img src={enrollment.qr} alt="OTP 등록 QR 코드" className="w-44 h-44 mx-auto border border-gray-200 rounded-xl p-2 bg-white" />
+            <p className="text-[11px] text-gray-500">QR을 찍을 수 없으면 이 키를 직접 입력하세요</p>
+            <p className="text-xs font-mono break-all bg-[#fafcfa] rounded-lg p-2 select-all">{enrollment.secret}</p>
+          </div>
+        )}
+        {(stage === 'enroll' || stage === 'code') && (
           <input
-            inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={code}
-            onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))} placeholder="인증번호 6자리" required
+            inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={code} autoFocus
+            onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))} placeholder="OTP 6자리" required
             className={`${input} text-center tracking-[0.5em] text-lg font-bold`}
           />
         )}
         {error && <p className="text-xs text-red-600 font-bold">{error}</p>}
-        <button disabled={busy} className="w-full bg-[#3e7acf] text-white font-bold rounded-xl py-3 disabled:opacity-50">
-          {busy ? '확인 중…' : stage === 'password' ? '다음' : '확인'}
-        </button>
-        {stage === 'code' && (
-          <div className="flex justify-between text-xs text-gray-500">
-            <button type="button" onClick={sendCode}>인증번호 다시 받기</button>
-            <button type="button" onClick={cancel}>다른 계정으로 로그인</button>
-          </div>
+        {stage !== 'loading' && (
+          <button disabled={busy} className="w-full bg-[#3e7acf] text-white font-bold rounded-xl py-3 disabled:opacity-50">
+            {busy ? '확인 중…' : stage === 'password' ? '다음' : stage === 'enroll' ? '등록하고 들어가기' : '확인'}
+          </button>
+        )}
+        {(stage === 'enroll' || stage === 'code') && (
+          <button type="button" onClick={cancel} className="w-full text-xs text-gray-500">다른 계정으로 로그인</button>
         )}
         <button type="button" onClick={onBackToHome} className="w-full text-xs text-gray-500">홈으로</button>
       </form>
@@ -626,8 +655,8 @@ function Promotions({ notify }) {
 // ── 콘솔 ────────────────────────────────────────────────
 export default function AdminDashboard({ onBackToHome }) {
   const [session, setSession] = useState(undefined); // undefined = 확인 중
-  const [isAdmin, setIsAdmin] = useState(false); // 2단계 인증까지 마친 관리자 세션인지
-  const [hasRole, setHasRole] = useState(false); // 관리자 계정인지(인증번호 전)
+  const [isAdmin, setIsAdmin] = useState(false); // OTP까지 통과한(aal2) 관리자 세션인지
+  const [hasRole, setHasRole] = useState(false); // 관리자 계정인지(OTP 전)
   const [tab, setTab] = useState('posts');
   const [overview, setOverview] = useState(null);
   const [toast, setToast] = useState(null);
