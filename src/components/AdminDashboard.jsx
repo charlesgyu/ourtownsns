@@ -3,6 +3,7 @@ import {
   ShieldAlert, MessageSquareWarning, Baby, UserX, BarChart3, Megaphone,
   LogOut, RefreshCw, CheckCircle2, XCircle, ArrowLeft, Lock, ExternalLink,
 } from 'lucide-react';
+import QRCode from 'qrcode';
 import { supabase } from '../lib/supabase';
 
 // 우리동네 관리자 콘솔. 실제 서버(Supabase)의 관리자 전용 함수(admin_*)를 부른다 —
@@ -95,49 +96,45 @@ function Images({ urls }) {
 }
 
 // ── 로그인(비밀번호 → OTP 앱) ─────────────────────────────
-// 서버의 is_admin()은 "OTP까지 통과한 로그인 세션(aal2)"에서만 참이다. 비밀번호만으로는 어떤 관리자 기능도
-// 쓸 수 없다. 처음이면 QR 코드로 OTP 앱(Google Authenticator 등)에 등록하고, 이후에는 6자리만 입력한다.
+// OTP 확인은 admin-totp 함수가 하고, 통과한 "지금 이 로그인 세션"만 관리자로 표시한다. 같은 계정의 다른 로그인
+// (휴대폰 앱 등)은 절대 끊지 않는다 — Supabase 기본 MFA는 다른 로그인을 끊어서 쓰지 않는다.
 // needsCode: 이미 비밀번호로 로그인돼 있고 OTP만 남은 상태(새로고침 등).
+async function totp(action, code) {
+  const { data, error } = await supabase.functions.invoke('admin-totp', { body: { action, code } });
+  if (error) {
+    let message = '처리하지 못했어요. 잠시 후 다시 시도해 주세요.';
+    try { message = (await error.context.json()).message || message; } catch { /* 기본 문구 */ }
+    throw new Error(message);
+  }
+  return data;
+}
+
 function Login({ onDone, onBackToHome, needsCode }) {
   const [stage, setStage] = useState(needsCode ? 'loading' : 'password'); // password | loading | enroll | code
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [code, setCode] = useState('');
-  const [factorId, setFactorId] = useState(null);
   const [enrollment, setEnrollment] = useState(null); // { qr, secret }
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
-  // 등록된 OTP가 있으면 6자리 입력, 없으면 새로 등록(QR). 등록하다 만 미인증 OTP는 지우고 다시 만든다.
+  // 등록을 마쳤으면 6자리 입력, 아니면 새 비밀키로 QR 등록.
   const prepareOtp = useCallback(async () => {
     setError('');
-    const { data, error: listError } = await supabase.auth.mfa.listFactors();
-    if (listError) {
-      setError('OTP 정보를 불러오지 못했어요. 다시 로그인해 주세요.');
+    try {
+      const { enrolled } = await totp('status');
+      if (enrolled) {
+        setStage('code');
+        return;
+      }
+      const { secret, uri } = await totp('enroll');
+      const qr = await QRCode.toDataURL(uri, { margin: 1, width: 240 });
+      setEnrollment({ qr, secret });
+      setStage('enroll');
+    } catch (e) {
+      setError(e.message);
       setStage('password');
-      return;
     }
-    const verified = data.totp.find((f) => f.status === 'verified');
-    if (verified) {
-      setFactorId(verified.id);
-      setStage('code');
-      return;
-    }
-    for (const f of data.all.filter((f) => f.factor_type === 'totp' && f.status !== 'verified')) {
-      await supabase.auth.mfa.unenroll({ factorId: f.id });
-    }
-    const { data: enrolled, error: enrollError } = await supabase.auth.mfa.enroll({
-      factorType: 'totp',
-      friendlyName: `우리동네 관리자 ${new Date().toISOString().slice(0, 10)}`,
-    });
-    if (enrollError) {
-      setError('OTP 등록을 시작하지 못했어요. 잠시 후 다시 시도해 주세요.');
-      setStage('password');
-      return;
-    }
-    setFactorId(enrolled.id);
-    setEnrollment({ qr: enrolled.totp.qr_code, secret: enrolled.totp.secret });
-    setStage('enroll');
   }, []);
 
   useEffect(() => { if (needsCode) prepareOtp(); }, [needsCode, prepareOtp]);
@@ -154,7 +151,7 @@ function Login({ onDone, onBackToHome, needsCode }) {
     }
     const hasRole = await rpc('has_admin_role').catch(() => false);
     if (!hasRole) {
-      await supabase.auth.signOut();
+      await supabase.auth.signOut({ scope: 'local' });
       setError('관리자 권한이 없는 계정이에요.');
       setBusy(false);
       return;
@@ -167,19 +164,23 @@ function Login({ onDone, onBackToHome, needsCode }) {
     e.preventDefault();
     setBusy(true);
     setError('');
-    const { error: verifyError } = await supabase.auth.mfa.challengeAndVerify({ factorId, code });
-    if (verifyError) {
+    try {
+      const { ok } = await totp('verify', code);
+      if (ok) {
+        setBusy(false);
+        onDone();
+        return;
+      }
       setError('OTP 번호가 맞지 않아요. 앱에 표시된 최신 번호를 입력해 주세요.');
-      setCode('');
-      setBusy(false);
-      return;
+    } catch (err) {
+      setError(err.message);
     }
+    setCode('');
     setBusy(false);
-    onDone();
   };
 
   const cancel = async () => {
-    await supabase.auth.signOut();
+    await supabase.auth.signOut({ scope: 'local' });
     setStage('password');
     setCode('');
     setEnrollment(null);
@@ -655,7 +656,7 @@ function Promotions({ notify }) {
 // ── 콘솔 ────────────────────────────────────────────────
 export default function AdminDashboard({ onBackToHome }) {
   const [session, setSession] = useState(undefined); // undefined = 확인 중
-  const [isAdmin, setIsAdmin] = useState(false); // OTP까지 통과한(aal2) 관리자 세션인지
+  const [isAdmin, setIsAdmin] = useState(false); // OTP까지 통과한 관리자 세션인지
   const [hasRole, setHasRole] = useState(false); // 관리자 계정인지(OTP 전)
   const [tab, setTab] = useState('posts');
   const [overview, setOverview] = useState(null);
@@ -689,7 +690,8 @@ export default function AdminDashboard({ onBackToHome }) {
   useEffect(() => { checkSession(); }, [checkSession]);
 
   const logout = async () => {
-    await supabase.auth.signOut();
+    // 이 브라우저의 로그인만 끝낸다(같은 계정으로 로그인한 앱 등 다른 기기는 그대로).
+    await supabase.auth.signOut({ scope: 'local' });
     setSession(null);
     setIsAdmin(false);
     setHasRole(false);
