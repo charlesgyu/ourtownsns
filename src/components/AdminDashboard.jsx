@@ -41,7 +41,7 @@ const TABS = [
   { id: 'posts', label: '게시글 신고', icon: ShieldAlert, badge: (o) => (o?.pending_post_reports ?? 0) + (o?.pending_appeals ?? 0) },
   { id: 'dms', label: 'DM 신고', icon: MessageSquareWarning, badge: (o) => o?.pending_dm_reports },
   { id: 'severe', label: '미성년자 의심', icon: Baby, badge: (o) => o?.unreviewed_severe },
-  { id: 'sanctions', label: '제재 사용자', icon: UserX },
+  { id: 'sanctions', label: '제재 사용자', icon: UserX, badge: (o) => o?.pending_usage_appeals },
   { id: 'stats', label: '가입자 통계', icon: BarChart3 },
   { id: 'promotions', label: '홍보 심사', icon: Megaphone },
 ];
@@ -498,7 +498,48 @@ function SevereFlags({ notify, refreshOverview }) {
 }
 
 // ── 제재 사용자 ──────────────────────────────────────────
-function Sanctions({ notify }) {
+// 비정상 이용(과다 조회·크롤링 의심)으로 7일 제한된 회원과 이의제기.
+function UsageSuspensions({ notify, refreshOverview }) {
+  const [rows, setRows] = useState(null);
+  const load = useCallback(async () => setRows(await rpc('admin_usage_suspensions')), []);
+  useEffect(() => { load().catch((e) => notify(e.message)); }, [load, notify]);
+
+  const lift = async (u) => {
+    if (!window.confirm(`${u.nickname}님의 이용 제한을 해제할까요?${u.appeal_status === 'pending' ? ' (이의제기를 받아들입니다)' : ''}`)) return;
+    try {
+      await rpc('admin_lift_usage_suspension', { p_user_id: u.user_id });
+      notify('이용 제한을 해제했어요.');
+      await load();
+      refreshOverview?.();
+    } catch (e) {
+      notify(e.message);
+    }
+  };
+
+  if (rows === null) return <p className="text-sm text-gray-500">불러오는 중…</p>;
+  return (
+    <div className="space-y-3">
+      <h3 className="font-black text-[#18322c]">비정상 이용으로 제한된 회원 (7일)</h3>
+      {rows.length === 0 && <Card className="text-sm text-gray-500">지금 제한된 회원이 없어요.</Card>}
+      {rows.map((u) => (
+        <Card key={u.user_id} className="space-y-2">
+          <div className="text-xs text-gray-600">
+            <b className="text-[#18322c] text-sm">{u.nickname}</b> {u.handle} · 사유: {u.reason} · 제한 {fmt(u.suspended_at)} ~ {fmt(u.until)}
+          </div>
+          {u.appeal_message ? (
+            <div className={`rounded-xl p-3 text-sm ${u.appeal_status === 'pending' ? 'bg-amber-50 border border-amber-200' : 'bg-[#fafcfa]'}`}>
+              <p className="text-[11px] font-black text-amber-800 mb-1">이의제기 · {u.appeal_status} · {fmt(u.appeal_at)}</p>
+              <p className="whitespace-pre-wrap text-gray-800">{u.appeal_message}</p>
+            </div>
+          ) : <p className="text-xs text-gray-400">이의제기 없음</p>}
+          <Btn tone="ghost" onClick={() => lift(u)}>제한 해제</Btn>
+        </Card>
+      ))}
+    </div>
+  );
+}
+
+function Sanctions({ notify, refreshOverview }) {
   const [rows, setRows] = useState(null);
   const load = useCallback(async () => setRows(await rpc('admin_sanctioned_users', { p_limit: 200 })), []);
   useEffect(() => { load().catch((e) => notify(e.message)); }, [load, notify]);
@@ -515,10 +556,13 @@ function Sanctions({ notify }) {
   };
 
   if (rows === null) return <p className="text-sm text-gray-500">불러오는 중…</p>;
-  if (rows.length === 0) return <Empty text="제재받은 사용자가 없어요" />;
   const now = Date.now();
 
   return (
+    <div className="space-y-6">
+    <UsageSuspensions notify={notify} refreshOverview={refreshOverview} />
+    <h3 className="font-black text-[#18322c]">게시글·DM 위반 제재</h3>
+    {rows.length === 0 ? <Card className="text-sm text-gray-500">제재받은 사용자가 없어요.</Card> : (
     <Card className="overflow-x-auto p-0">
       <table className="w-full text-sm">
         <thead className="bg-[#fafcfa] text-xs text-gray-500">
@@ -553,6 +597,8 @@ function Sanctions({ notify }) {
         </tbody>
       </table>
     </Card>
+    )}
+    </div>
   );
 }
 
