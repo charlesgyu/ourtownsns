@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   ShieldAlert, MessageSquareWarning, Baby, UserX, BarChart3, Megaphone,
-  LogOut, RefreshCw, CheckCircle2, XCircle, ArrowLeft, Lock, ExternalLink,
+  LogOut, RefreshCw, CheckCircle2, XCircle, ArrowLeft, Lock, ExternalLink, Flag,
 } from 'lucide-react';
 import QRCode from 'qrcode';
 import { supabase } from '../lib/supabase';
@@ -40,6 +40,7 @@ const ACTION_LABEL = {
 const TABS = [
   { id: 'posts', label: '게시글 신고', icon: ShieldAlert, badge: (o) => (o?.pending_post_reports ?? 0) + (o?.pending_appeals ?? 0) },
   { id: 'dms', label: 'DM 신고', icon: MessageSquareWarning, badge: (o) => o?.pending_dm_reports },
+  { id: 'users', label: '사용자 신고', icon: Flag, badge: (o) => o?.pending_user_reports },
   { id: 'severe', label: '미성년자 의심', icon: Baby, badge: (o) => o?.unreviewed_severe },
   { id: 'sanctions', label: '제재 사용자', icon: UserX, badge: (o) => o?.pending_usage_appeals },
   { id: 'stats', label: '가입자 통계', icon: BarChart3 },
@@ -447,6 +448,73 @@ function DmReports({ notify, refreshOverview }) {
   );
 }
 
+// ── 사용자(프로필) 신고 ──────────────────────────────────
+function UserReports({ notify, refreshOverview }) {
+  const [rows, setRows] = useState(null);
+  const [showAll, setShowAll] = useState(false);
+  const load = useCallback(async () => setRows(await rpc('admin_user_reports', { p_include_closed: showAll })), [showAll]);
+  useEffect(() => { load().catch((e) => notify(e.message)); }, [load, notify]);
+
+  const resolve = async (r, status) => {
+    const msg = status === 'resolved'
+      ? `${r.target_nickname ?? '이 사용자'}님 신고를 조치 완료로 표시할까요? (경고·정지 등 실제 제재는 필요하면 따로 진행해 주세요)`
+      : '위반이 아닌 것으로 기각할까요?';
+    if (!window.confirm(msg)) return;
+    try {
+      await rpc('admin_resolve_user_report', { p_report_id: r.id, p_status: status });
+      notify(status === 'resolved' ? '조치 완료로 표시했어요.' : '기각했어요.');
+      await load();
+      refreshOverview();
+    } catch (e) {
+      notify(e.message);
+    }
+  };
+
+  return (
+    <div className="space-y-3">
+      <p className="text-xs text-gray-500">앱의 상대 프로필 ⋯ 메뉴에서 접수된 사람 신고입니다. 자동 제재 없이 관리자가 판단합니다.</p>
+      <label className="text-xs text-gray-600 flex items-center gap-2">
+        <input type="checkbox" checked={showAll} onChange={(e) => setShowAll(e.target.checked)} /> 처리된 신고도 보기
+      </label>
+      {rows === null && <p className="text-sm text-gray-500">불러오는 중…</p>}
+      {rows?.length === 0 && <Empty text="검토할 사용자 신고가 없어요" />}
+      {rows?.map((r) => (
+        <Card key={r.id} className="space-y-3">
+          <div className="flex items-start gap-3">
+            {r.target_avatar_url?.startsWith('http')
+              ? <img src={r.target_avatar_url} alt="" className="w-12 h-12 rounded-xl object-cover bg-gray-100" />
+              : <div className="w-12 h-12 rounded-xl bg-gray-100" />}
+            <div className="min-w-0 flex-1">
+              <div className="text-sm">
+                <b className="text-[#18322c]">{r.target_nickname ?? '(탈퇴한 계정)'}</b>{' '}
+                <span className="text-gray-500">{r.target_handle ?? ''}</span>
+                {r.target_open_reports > 1 && (
+                  <span className="ml-2 text-[11px] font-bold text-red-600">미처리 신고 {r.target_open_reports}건</span>
+                )}
+              </div>
+              {r.target_bio && <p className="text-xs text-gray-600 whitespace-pre-wrap mt-1">{r.target_bio}</p>}
+            </div>
+          </div>
+          <div className="text-xs text-gray-600">
+            사유 <b>{r.category}</b> · 신고자 {r.reporter_nickname ?? '(탈퇴)'} {r.reporter_handle ?? ''} · {fmt(r.created_at)}
+          </div>
+          {r.details && <p className="text-sm text-gray-800 bg-[#fafcfa] rounded-xl p-3 whitespace-pre-wrap">{r.details}</p>}
+          {r.status === 'open' ? (
+            <div className="flex gap-2">
+              <Btn tone="danger" onClick={() => resolve(r, 'resolved')}>조치 완료</Btn>
+              <Btn tone="ghost" onClick={() => resolve(r, 'dismissed')}>기각</Btn>
+            </div>
+          ) : (
+            <span className="text-xs font-bold text-[#3ecf8e]">
+              {r.status === 'resolved' ? '조치 완료' : '기각'} · {fmt(r.resolved_at)}
+            </span>
+          )}
+        </Card>
+      ))}
+    </div>
+  );
+}
+
 // ── 미성년자 관련 의심 건 ─────────────────────────────────
 function SevereFlags({ notify, refreshOverview }) {
   const [rows, setRows] = useState(null);
@@ -748,7 +816,7 @@ export default function AdminDashboard({ onBackToHome }) {
     return <Login onDone={checkSession} onBackToHome={onBackToHome} needsCode={Boolean(session && hasRole)} />;
   }
 
-  const Active = { posts: PostReports, dms: DmReports, severe: SevereFlags, sanctions: Sanctions, stats: Stats, promotions: Promotions }[tab];
+  const Active = { posts: PostReports, dms: DmReports, users: UserReports, severe: SevereFlags, sanctions: Sanctions, stats: Stats, promotions: Promotions }[tab];
 
   return (
     <div className="min-h-screen bg-[#fafcfa] text-[#18322c]">
